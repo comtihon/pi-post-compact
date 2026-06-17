@@ -1,0 +1,22 @@
+{
+  "name": "pi-post-compact",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Post-compaction context reduction plugin for pi agent",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.79.6",
+    "@earendil-works/pi-ai": "^0.79.6"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.79.6",
+    "@earendil-works/pi-ai": "^0.79.6",
+    "typescript": "^5.0.0"
+  }
+}
