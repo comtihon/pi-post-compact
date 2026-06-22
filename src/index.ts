@@ -15,25 +15,19 @@ interface PostCompactConfig {
 }
 
 const SYSTEM_PROMPT_ADDON = `
-## Tool Result Compaction
+## Tool Result Compaction (REQUIRED)
 
-When calling tools (except edit, write, multiedit), you may include a \`post_compact\` field in your arguments:
-- \`post_compact.exact: false\` — you want a compact summary of the result (reduces context)
-- \`post_compact.exact: true\` — you need verbatim output (default behavior if omitted)
-- \`post_compact.reason: string\` — describe what you are looking for in this tool call
+For EVERY tool call except edit, write, and multiedit, you MUST include a \`post_compact\` field:
+- \`post_compact.exact: false\` — summarise the result (DEFAULT — use unless you have a specific reason for verbatim output)
+- \`post_compact.exact: true\` — keep verbatim output (only when you need exact line numbers, content to diff/edit, or precise error text)
+- \`post_compact.reason: string\` — REQUIRED; describe what you are looking for in this tool call
 
-Use \`exact: false\` when:
-- Running bash commands where you only need to know if they succeeded or a specific output value
-- Reading large files where you only need a specific section
-- Fetching URLs where you only need specific information
-- Any tool where the full output would be larger than needed
+Omitting \`post_compact\` is only permitted for edit, write, and multiedit tools.
 
-Use \`exact: true\` (or omit post_compact) when:
-- You need to edit/modify content based on the exact output
-- You need line numbers, exact error messages, or precise values
-- DO NOT add post_compact to: edit, write, multiedit tools
-
-Example: if you run \`bash\` to check if a file exists, add \`post_compact: { exact: false, reason: "I just need to know if the file exists and its size" }\`.
+Examples:
+- \`semble search "auth flow"\` → \`post_compact: { exact: false, reason: "looking for authentication entry points" }\`
+- \`bash\` reading a file you will edit → \`post_compact: { exact: true, reason: "need exact content to produce an edit" }\`
+- \`jira_get_issue\` → \`post_compact: { exact: false, reason: "need ticket description and acceptance criteria" }\`
 `.trimStart();
 
 function loadConfig(cwd: string): PostCompactConfig {
