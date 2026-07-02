@@ -30,7 +30,7 @@ Examples:
 - \`jira_get_issue\` → \`post_compact: { exact: false, reason: "need ticket description and acceptance criteria" }\`
 `.trimStart();
 
-function loadConfig(cwd: string): PostCompactConfig {
+export function loadConfig(cwd: string): PostCompactConfig {
 	const globalPath = join(getAgentDir(), "post-compact.json");
 	const projectPath = join(cwd, ".pi", "post-compact.json");
 
@@ -58,13 +58,96 @@ function loadConfig(cwd: string): PostCompactConfig {
 	return { ...globalConfig, ...projectConfig };
 }
 
-function parseMetaLlm(metaLlm: string): { provider: string; model: string } | undefined {
+export function parseMetaLlm(metaLlm: string): { provider: string; model: string } | undefined {
 	const idx = metaLlm.indexOf("/");
 	if (idx <= 0) return undefined;
 	return {
 		provider: metaLlm.slice(0, idx),
 		model: metaLlm.slice(idx + 1),
 	};
+}
+
+interface ModelRegistryLike {
+	getApiKeyAndHeaders(model: unknown): Promise<{ ok: boolean; apiKey?: string; headers?: unknown }>;
+}
+
+/**
+ * Summarize `text` via the configured meta-LLM, focused on `opts.reason`.
+ * Returns `undefined` on any failure or empty summary — never throws
+ * ("never break the agent"), matching the original inline tool_result hook
+ * behavior this was extracted from.
+ */
+export async function compactToolResult(
+	text: string,
+	opts: { exact: boolean; reason: string },
+	metaLlm: string,
+	modelRegistry: ModelRegistryLike,
+): Promise<
+	| { text: string; usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number } }
+	| undefined
+> {
+	if (opts.exact) return undefined;
+
+	try {
+		const parsed = parseMetaLlm(metaLlm);
+		if (!parsed) return undefined;
+
+		const model = getModel(parsed.provider as KnownProvider, parsed.model as never);
+		if (!model) return undefined;
+
+		const auth = await modelRegistry.getApiKeyAndHeaders(model);
+		if (!auth.ok) return undefined;
+
+		const summaryPrompt = [
+			`Summarize the following tool output concisely. Focus on: ${opts.reason}`,
+			"",
+			"Preserve key facts, values, and any errors. Omit irrelevant details.",
+			"",
+			"<output>",
+			text,
+			"</output>",
+		].join("\n");
+
+		const response = await complete(
+			model,
+			{
+				messages: [
+					{
+						role: "user" as const,
+						content: [{ type: "text" as const, text: summaryPrompt }],
+						timestamp: Date.now(),
+					},
+				],
+			},
+			{
+				apiKey: auth.apiKey,
+				headers: auth.headers as never,
+			},
+		);
+
+		const summary = response.content
+			.filter((c): c is { type: "text"; text: string } => c.type === "text")
+			.map((c) => c.text)
+			.join("\n");
+
+		if (!summary.trim()) return undefined;
+
+		// pi-ai's Usage shape (input/output/totalTokens) differs from the
+		// OpenAI-style prompt_tokens/completion_tokens/total_tokens shape the
+		// caller (runner.js's _addUsage accumulator) expects — map it here.
+		const usage = response.usage
+			? {
+					prompt_tokens: response.usage.input,
+					completion_tokens: response.usage.output,
+					total_tokens: response.usage.totalTokens,
+				}
+			: undefined;
+
+		return { text: summary, usage };
+	} catch {
+		// Never break the agent
+		return undefined;
+	}
 }
 
 export default function postCompactExtension(pi: ExtensionAPI) {
@@ -131,64 +214,19 @@ export default function postCompactExtension(pi: ExtensionAPI) {
 		const fullText = textParts.join("\n");
 		if (!fullText.trim()) return undefined;
 
-		try {
-			// Resolve meta-LLM config
-			const flagValue = pi.getFlag("meta_llm");
-			const config = loadConfig(configCwd);
-			const metaLlmStr =
-				typeof flagValue === "string" && flagValue
-					? flagValue
-					: config.meta_llm ?? "anthropic/claude-haiku-4-5";
+		// Resolve meta-LLM config
+		const flagValue = pi.getFlag("meta_llm");
+		const config = loadConfig(configCwd);
+		const metaLlmStr =
+			typeof flagValue === "string" && flagValue
+				? flagValue
+				: config.meta_llm ?? "anthropic/claude-haiku-4-5";
 
-			const parsed = parseMetaLlm(metaLlmStr);
-			if (!parsed) return undefined;
+		const result = await compactToolResult(fullText, directive, metaLlmStr, ctx.modelRegistry);
+		if (!result) return undefined;
 
-			const model = getModel(parsed.provider as KnownProvider, parsed.model as never);
-			if (!model) return undefined;
-
-			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-			if (!auth.ok) return undefined;
-
-			const summaryPrompt = [
-				`Summarize the following tool output concisely. Focus on: ${directive.reason}`,
-				"",
-				"Preserve key facts, values, and any errors. Omit irrelevant details.",
-				"",
-				"<output>",
-				fullText,
-				"</output>",
-			].join("\n");
-
-			const response = await complete(
-				model,
-				{
-					messages: [
-						{
-							role: "user" as const,
-							content: [{ type: "text" as const, text: summaryPrompt }],
-							timestamp: Date.now(),
-						},
-					],
-				},
-				{
-					apiKey: auth.apiKey,
-					headers: auth.headers,
-				},
-			);
-
-			const summary = response.content
-				.filter((c): c is { type: "text"; text: string } => c.type === "text")
-				.map((c) => c.text)
-				.join("\n");
-
-			if (!summary.trim()) return undefined;
-
-			return {
-				content: [{ type: "text" as const, text: summary }],
-			};
-		} catch {
-			// Never break the agent
-			return undefined;
-		}
+		return {
+			content: [{ type: "text" as const, text: result.text }],
+		};
 	});
 }
