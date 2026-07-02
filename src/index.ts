@@ -225,6 +225,16 @@ export default function postCompactExtension(pi: ExtensionAPI) {
 		const result = await compactToolResult(fullText, directive, metaLlmStr, ctx.modelRegistry);
 		if (!result) return undefined;
 
+		// result.usage is intentionally discarded here: the pi-coding-agent SDK's
+		// ExtensionContext/ExtensionAPI surface (checked against the installed
+		// @earendil-works/pi-coding-agent .d.ts) exposes no mechanism for a plugin
+		// to report supplementary token usage into the SDK's own session-level
+		// accounting — getContextUsage() is read-only and there is no
+		// addUsage/reportTokens/recordUsage-style API. This is a hard SDK
+		// limitation, not an oversight; the meta-LLM tokens spent on compaction
+		// via this native tool_result hook path are invisible to session stats.
+		// (The separate mcp-resolver-loop path in runner.js works around this by
+		// accumulating usage itself since it already intercepts raw HTTP responses.)
 		return {
 			content: [{ type: "text" as const, text: result.text }],
 		};
