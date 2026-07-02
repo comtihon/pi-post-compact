@@ -10,6 +10,10 @@
   "scripts": {
     "build": "tsc"
   },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.79.6",
+    "@earendil-works/pi-ai": "^0.79.6"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "^0.79.6",
     "@earendil-works/pi-ai": "^0.79.6"
