@@ -207,3 +207,88 @@ test("a malformed message cannot break the turn", async () => {
 	const out = await engine.transform(messages, inertDeps);
 	assert.equal(out.length, 2);
 });
+
+// ── argument-collapse threshold (PI_ARG_COLLAPSE_MIN_CHARS) ──────────────
+// Ported from pi-cloud-agent test/arg_collapse.test.mjs (trackLargeToolCallArgs
+// and the cache-frontier adapter), expressed against pi's message shape.
+
+function argsOf(msg: Msg, index = 0): Record<string, unknown> {
+	return ((msg.content as Array<Record<string, unknown>>)[index]?.arguments ?? {}) as Record<string, unknown>;
+}
+
+test("arg collapse uses its own threshold, independent of minChars", async () => {
+	const engine = new ContextCollapseEngine({ minChars: 100000, argMinChars: 10 });
+	const msg = assistantWithToolCall("a1", "write", { path: "a.ts", content: "x".repeat(50) });
+	for (let i = 0; i < 3; i++) await engine.transform([msg], inertDeps);
+	assert.equal(argsOf(msg).collapsed, true);
+});
+
+test("arg collapse threshold is strict: args exactly at the threshold are kept", async () => {
+	const args = { path: "a.ts", content: "x".repeat(20) };
+	const size = JSON.stringify(args).length;
+
+	const atThreshold = new ContextCollapseEngine({ argMinChars: size });
+	const kept = assistantWithToolCall("a1", "write", { ...args });
+	for (let i = 0; i < 3; i++) await atThreshold.transform([kept], inertDeps);
+	assert.equal(argsOf(kept).collapsed, undefined);
+
+	const belowThreshold = new ContextCollapseEngine({ argMinChars: size - 1 });
+	const collapsed = assistantWithToolCall("a1", "write", { ...args });
+	for (let i = 0; i < 3; i++) await belowThreshold.transform([collapsed], inertDeps);
+	assert.equal(argsOf(collapsed).collapsed, true);
+});
+
+test("arg collapse threshold defaults to 800", async () => {
+	const engine = new ContextCollapseEngine();
+	// 800 chars serialized → kept; 801 → collapsed.
+	const pad = (n: number) => {
+		const base = JSON.stringify({ path: "a.ts", content: "" }).length;
+		return { path: "a.ts", content: "x".repeat(n - base) };
+	};
+	const kept = assistantWithToolCall("k", "write", pad(800), 1);
+	const gone = assistantWithToolCall("g", "write", pad(801), 2);
+	for (let i = 0; i < 3; i++) await engine.transform([kept, gone], inertDeps);
+	assert.equal(argsOf(kept).collapsed, undefined);
+	assert.equal(argsOf(gone).collapsed, true);
+});
+
+test("each large tool call in one message is collapsed; small siblings are not", async () => {
+	const engine = new ContextCollapseEngine({ argMinChars: 10 });
+	const msg: Msg = {
+		role: "assistant",
+		timestamp: 1,
+		content: [
+			{ type: "toolCall", id: "a1", name: "write", arguments: { path: "a", content: "x".repeat(50) } },
+			{ type: "toolCall", id: "a2", name: "ls", arguments: {} },
+		],
+	};
+	for (let i = 0; i < 3; i++) await engine.transform([msg], inertDeps);
+	assert.equal(argsOf(msg, 0).collapsed, true);
+	assert.deepEqual(argsOf(msg, 1), {});
+	assert.equal(engine.getStats().collapsedToolCallArgs, 1);
+});
+
+test("a tool call keeps its first-seen round-trip across transforms (not re-tracked)", async () => {
+	const engine = new ContextCollapseEngine({ argMinChars: 10 });
+	const msg = assistantWithToolCall("a1", "write", { path: "a", content: "x".repeat(50) });
+	await engine.transform([msg], inertDeps); // r1: seen
+	await engine.transform([msg], inertDeps); // r2: executes
+	assert.equal(argsOf(msg).collapsed, undefined);
+	await engine.transform([msg], inertDeps); // r3: due relative to r1, not r2/r3
+	assert.equal(argsOf(msg).collapsed, true);
+	await engine.transform([msg], inertDeps);
+	assert.equal(engine.getStats().collapsedToolCallArgs, 1, "collapsed exactly once");
+});
+
+test("cache frontier is the minimum index across pending results and pending args", async () => {
+	const engine = new ContextCollapseEngine({ argMinChars: 10 });
+	engine.noteExactResult("t1", "find x");
+	const messages: Msg[] = [
+		{ role: "user", content: "hi" },
+		assistantWithToolCall("a1", "write", { path: "a", content: "x".repeat(50) }),
+		toolResult("t1", bigText),
+	];
+	await engine.transform(messages, inertDeps);
+	assert.equal(engine.getStats().cacheFrontier, 1);
+	assert.deepEqual(engine.getPendingIds().sort(), ["a1", "t1"]);
+});
