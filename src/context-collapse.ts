@@ -20,6 +20,7 @@ import {
 } from "./compact.js";
 import { type ArtifactStore, collapseStub } from "./artifacts.js";
 import { cacheFrontierIndex, summarizeToolCallArgs, truncateWithNotice } from "./collapse.js";
+import { DEFAULT_ARG_COLLAPSE_MIN_CHARS } from "./defaults.js";
 
 /** Minimal structural views of the pi message shapes this engine touches. */
 interface TextBlock {
@@ -78,6 +79,13 @@ function assistantKey(msg: AssistantLike, index: number): string {
 export interface ContextCollapseOptions {
 	/** Text shorter than this is left alone. Defaults to `DEFAULT_MIN_CHARS`. */
 	minChars?: number;
+	/**
+	 * Tool-call arguments are collapsed only when their serialized JSON is
+	 * strictly longer than this. Separate from `minChars` because argument
+	 * collapse is lexical (no LLM call), so it is worth doing at a different
+	 * size than an LLM summary. Defaults to `DEFAULT_ARG_COLLAPSE_MIN_CHARS`.
+	 */
+	argMinChars?: number;
 	/** Hard ceiling applied to any tool-result text that survives collapse. 0 disables. */
 	maxToolResultChars?: number;
 	/** Where displaced originals are written so the model can read them back. */
@@ -214,6 +222,7 @@ export class ContextCollapseEngine {
 		this.stats.roundTrip = this.roundTrip;
 
 		const minChars = this.options.minChars ?? DEFAULT_MIN_CHARS;
+		const argMinChars = this.options.argMinChars ?? DEFAULT_ARG_COLLAPSE_MIN_CHARS;
 		const maxChars = this.options.maxToolResultChars ?? 0;
 		const artifacts = this.options.artifacts;
 		const pending = new Set<string>();
@@ -230,7 +239,7 @@ export class ContextCollapseEngine {
 				if (isAssistant(msg)) {
 					const key = assistantKey(msg, i);
 					await this.collapseAssistantContent(msg, key, { minChars, artifacts, deps, pending });
-					await this.collapseToolCallArgs(msg, { minChars, artifacts, deps, pending });
+					await this.collapseToolCallArgs(msg, { argMinChars, artifacts, deps, pending });
 				}
 			}
 		} catch (err) {
@@ -341,7 +350,7 @@ export class ContextCollapseEngine {
 	private async collapseToolCallArgs(
 		msg: AssistantLike & MessageLike,
 		ctx: {
-			minChars: number;
+			argMinChars: number;
 			artifacts: ArtifactStore | undefined;
 			deps: CompactOrKeepDeps;
 			pending: Set<string>;
@@ -351,7 +360,7 @@ export class ContextCollapseEngine {
 			if (!isToolCallBlock(block)) continue;
 
 			const serialized = JSON.stringify(block.arguments ?? {});
-			if (serialized.length <= ctx.minChars) continue;
+			if (serialized.length <= ctx.argMinChars) continue;
 
 			const id = `args-${block.id}`;
 			this.seen(id);
